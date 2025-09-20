@@ -1,17 +1,14 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from data.raw import get_price_df, get_sentiment_df
+from data.raw import get_price_df
 from sklearn.preprocessing import MinMaxScaler
-from data.sentiment import SentimentAnalyser
 
+DATE_COLUMN = "begins_at"
 
-class DataPreprocessor:
+class PricePreprocessor:
     def __init__(self):
-        self.sentiment_df = SentimentAnalyser().analyze_text()
-        self.price_df = get_price_df("/Users/ivan/PycharmProjects/scam/BTC.csv")
-        self.df = pd.merge(self.sentiment_df, self.price_df, on="begins_at", how="left")
-
+        self.df = get_price_df("/Users/ivan/PycharmProjects/scam/BTC.csv")
         self.scalar = MinMaxScaler()
         self.target_col = "close_price"
         self.numeric_cols = self.df.select_dtypes(include="number").columns
@@ -46,11 +43,21 @@ class DataPreprocessor:
         selected_features = target_corr[target_corr > correlation_threshold].index.tolist()
         return self.df[selected_features]
 
+    def to_time_series(self, frequency: str = "D"):
+        self.df[DATE_COLUMN] = pd.to_datetime(self.df[DATE_COLUMN])
+        time_series = self.df.groupby(pd.Grouper(key=DATE_COLUMN, freq=frequency)).mean()
+        time_series = time_series.fillna(0)
+        return time_series
+
+    def run_price_preprocessing(self):
+        self.fill_missing()
+        self.compute_percentage_change()
+        self.scale_features()
+        self.plot_correlation_matrix()
+        self.select_correlated_features()
+        return self.to_time_series()
 
 if __name__ == "__main__":
-    prep = DataPreprocessor()
-    prep.fill_missing()
-    prep.compute_percentage_change()
-    prep.scale_features()
-    prep.plot_correlation_matrix()
-    df_selected = prep.select_correlated_features()
+    prep = PricePreprocessor()
+    ts = prep.run_price_preprocessing()
+    print(ts)
