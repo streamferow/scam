@@ -1,41 +1,63 @@
 import pandas as pd
-from typing import TypedDict
+from tqdm import tqdm
+from typing import List
 from data.raw import get_sentiment_df
+from sklearn.preprocessing import  MinMaxScaler
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
 
-TEXT_COLUMN = "articles"
+TEXT_COLUMNS = "articles"
+DATE_COLUMN = "begins_at"
 
-class SentimentAnalyser:
+class SentimentPreprocessor:
     def __init__(self, model_name: str = "ez3nx/ru-tpulse-finance-sentiment"):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
-        self.pipe = pipeline("sentiment-analysis", model=self.model, tokenizer=self.tokenizer)
+        self.pipe = pipeline("sentiment-analysis", model=self.model, tokenizer=self.tokenizer, return_all_scores=True)
         self.df = get_sentiment_df("/Users/ivan/PycharmProjects/scam/BTC.csv")
+        self.scalar = MinMaxScaler()
 
     @staticmethod
-    def label_to_score(result: TypedDict) -> float:
-        label = result["label"]
-        score = result["score"]
-        if "LABEL_1" in label:
-            return 0.5 + 0.5 * score
-        elif "LABEL_0" in label:
-            return 0.0 + 0.5 * score
-        else:
-            return 0.4 + 0.2 * score
-
+    def probabilities_to_score(probs: List[dict]) -> float:
+        negative_prob = next(x["score"] for x in probs if "LABEL_-1" in x["label"])
+        positive_prob = next(x["score"] for x in probs if "LABEL_1" in x["label"])
+        return positive_prob - negative_prob
 
     def analyze_text(self) -> pd.DataFrame:
-        self.df[TEXT_COLUMN] = self.df[TEXT_COLUMN].fillna("")
+        self.df[TEXT_COLUMNS] = self.df[TEXT_COLUMNS].fillna("")
         sentiment_scores = []
+        batch_size = 16
 
-        for texts in self.df[TEXT_COLUMN]:
-            scores = []
-            for text in texts:
-                if text.strip() == "":
-                    scores.append(0.5)
-                else:
-                    result = self.pipe(text)[0]
-                    scores.append(SentimentAnalyser.label_to_score(result))
-            sentiment_scores.append(sum(scores) / len(scores))
+        for texts in tqdm(self.df[TEXT_COLUMNS], desc="News analyzing", total=len(self.df)):
+            batch_scores = []
+
+            if isinstance(texts, list):
+                for i in range(0, len(texts), batch_size):
+                    batch = [t for t in texts[i:i + batch_size]]
+                    results = self.pipe(batch)
+
+                    for probs in results:
+                        batch_scores.append(SentimentPreprocessor.probabilities_to_score(probs))
+
+            else:
+                probs = self.pipe([texts])[0]
+                batch_scores.append(SentimentPreprocessor.probabilities_to_score(probs))
+
+            sentiment_scores.append(sum(batch_scores) / len(batch_scores))
         self.df["sentiment_score"] = sentiment_scores
         return self.df
+
+    def scale_features(self):
+        self.df[TEXT_COLUMNS] = self.scalar.fit_transform(self.df[TEXT_COLUMNS])
+        return self.df
+
+    def to_time_series(self, frequency: str = "D"):
+        self.df[DATE_COLUMN] = pd.to_datetime(self.df[DATE_COLUMN])
+        time_series = self.df.groupby(pd.Grouper(key=DATE_COLUMN, freq=frequency))["sentiment_score"].mean()
+        time_series = time_series.fillna(0)
+        return time_series
+
+    def run_sentiment_preprocessing(self):
+        self.analyze_text()
+        self.scale_features()
+        return self.to_time_series()
+
